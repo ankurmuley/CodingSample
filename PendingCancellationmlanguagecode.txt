@@ -1,0 +1,35 @@
+
+let
+    Source = Sql.Databases("crm6446v55putmk5vvrgig2ntq-ednk2mps3skulkfpbxcex2ugae.datawarehouse.fabric.microsoft.com"),
+    IH_Reporting_UAT = Source{[Name="PROD_DIEP2_IH"]}[Data],
+    dbo_Policy_policy = IH_Reporting_UAT{[Schema="dbo",Item="Policy_policy"]}[Data],
+    #"Split Column by Delimiter" = Table.SplitColumn(dbo_Policy_policy, "EffectiveDate", Splitter.SplitTextByDelimiter("T", QuoteStyle.None), {"EffectiveDate.1", "EffectiveDate.2"}),
+    #"Renamed Columns1" = Table.RenameColumns(#"Split Column by Delimiter",{{"EffectiveDate.1", "EffectiveDate"}}),
+    #"Changed Type" = Table.TransformColumnTypes(#"Renamed Columns1",{{"EffectiveDate", type date}}),
+    #"Split Column by Delimiter1" = Table.SplitColumn(#"Changed Type", "ExpirationDate", Splitter.SplitTextByDelimiter("T", QuoteStyle.None), {"ExpirationDate.1", "ExpirationDate.2"}),
+    #"Renamed Columns2" = Table.RenameColumns(#"Split Column by Delimiter1",{{"ExpirationDate.1", "ExpirationDate"}}),
+    #"Changed Type1" = Table.TransformColumnTypes(#"Renamed Columns2",{{"ExpirationDate", type date}}),
+    #"Merged Queries" = Table.NestedJoin(#"Changed Type1", {"Policy_ref"}, Transaction_policy, {"Policy_ref"}, "Transaction_policy", JoinKind.LeftOuter),
+    #"Expanded Transaction_policy" = Table.ExpandTableColumn(#"Merged Queries", "Transaction_policy", {"EffectiveDate", "Reason"}, {"Transaction_policy.EffectiveDate", "Transaction_policy.Reason"}),
+    #"Merged Queries1" = Table.NestedJoin(#"Expanded Transaction_policy", {"Policy_ref"}, InsuredAccount_policy, {"Policy_ref"}, "InsuredAccount_policy", JoinKind.LeftOuter),
+    #"Expanded InsuredAccount_policy" = Table.ExpandTableColumn(#"Merged Queries1", "InsuredAccount_policy", {"FirstName", "LastName", "Communications"}, {"InsuredAccount_policy.FirstName", "InsuredAccount_policy.LastName", "InsuredAccount_policy.Communications"}),
+    #"Added Custom" = Table.AddColumn(#"Expanded InsuredAccount_policy", "Insured Phone", each try ([InsuredAccount_policy.Communications]) otherwise null),
+    #"Filtered Rows" = Table.SelectRows(#"Added Custom", each ([Insured Phone] = "PhNo")),
+    #"Merged Queries2" = Table.NestedJoin(#"Filtered Rows", {"Policy_ref"}, InsuredAccount_Communications_policy, {"Policy_ref"}, "InsuredAccount_Communications_policy", JoinKind.LeftOuter),
+    #"Expanded InsuredAccount_Communications_policy" = Table.ExpandTableColumn(#"Merged Queries2", "InsuredAccount_Communications_policy", {"Value", "Type"}, {"InsuredAccount_Communications_policy.Value", "InsuredAccount_Communications_policy.Type"}),
+    #"Renamed Columns" = Table.RenameColumns(#"Expanded InsuredAccount_Communications_policy",{{"InsuredAccount_Communications_policy.Type", "Communications"}}),
+    #"Merged Columns" = Table.CombineColumns(#"Renamed Columns",{"InsuredAccount_policy.FirstName", "InsuredAccount_policy.LastName"},Combiner.CombineTextByDelimiter(" ", QuoteStyle.None),"Merged"),
+    #"Filtered Rows1" = Table.SelectRows(#"Merged Columns", each ([Communications] = "PhNo") and ([PolicyStatus] = "Active Policy" or [PolicyStatus] = "Pending Cancellation-Signed Application" or [PolicyStatus] = "Cancellation Signature Pending" or [PolicyStatus] = "Pending Cancellation" or [PolicyStatus] = "Policy Cancelled")),
+    #"Removed Duplicates" = Table.Distinct(#"Filtered Rows1"),
+    #"Added Custom1" = Table.AddColumn(#"Removed Duplicates", "Custom", each let
+    today = Date.From(DateTime.LocalNow()),
+    pastDate = Date.AddDays(today, -30)
+in
+    if [Transaction_policy.EffectiveDate] >= pastDate then 1 else 0),
+    #"Filtered Rows2" = Table.SelectRows(#"Added Custom1", each ([Custom] = 1)),
+    #"Removed Columns" = Table.RemoveColumns(#"Filtered Rows2",{"Custom"}),
+    #"Capitalized Each Word" = Table.TransformColumns(#"Removed Columns",{{"Merged", Text.Proper, type text}}),
+    #"Merged Queries3" = Table.NestedJoin(#"Capitalized Each Word", {"Policy_ref"}, Agent_policy, {"Policy_ref"}, "Agent_policy", JoinKind.LeftOuter),
+    #"Expanded Agent_policy" = Table.ExpandTableColumn(#"Merged Queries3", "Agent_policy", {"Code", "Agency_Master.agency_city"}, {"Agent_policy.Code", "Agent_policy.Agency_Master.agency_city"})
+in
+    #"Expanded Agent_policy"
